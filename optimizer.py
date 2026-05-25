@@ -58,7 +58,28 @@ class AdamW(Optimizer):
 
                         자세한 내용은 기본 프로젝트 안내문을 참조할 것.
                 '''
-                ### 완성시켜야 할 빈 코드 블록
-                raise NotImplementedError
+                if len(state) == 0:
+                    state['step'] = 0
+                    state['m'] = torch.zeros_like(p.data)
+                    state['v'] = torch.zeros_like(p.data)
+
+                state['step'] += 1
+                beta1, beta2 = group['betas']
+                eps = group['eps']
+                weight_decay = group['weight_decay']
+
+                state['m'] = beta1 * state['m'] + (1 - beta1) * grad
+                state['v'] = beta2 * state['v'] + (1 - beta2) * grad ** 2
+
+                m_hat = state['m']
+                v_hat = state['v']
+                if group['correct_bias']:
+                    m_hat = m_hat / (1 - beta1 ** state['step'])
+                    v_hat = v_hat / (1 - beta2 ** state['step'])
+
+                p.data = p.data - alpha * m_hat / (torch.sqrt(v_hat) + eps)
+
+                if weight_decay > 0.0:
+                    p.data = p.data - alpha * weight_decay * p.data
 
         return loss

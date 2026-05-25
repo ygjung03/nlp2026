@@ -33,9 +33,23 @@ class CausalSelfAttention(nn.Module):
     return proj
 
   def attention(self, key, query, value, attention_mask):
+    d_k = query.size(-1)
+    scores = torch.matmul(query, key.transpose(-2, -1)) / (d_k ** 0.5)
 
-    ### 완성시켜야 할 빈 코드 블록
-    raise NotImplementedError
+    seq_len = query.size(2)
+    causal_mask = torch.triu(
+      torch.ones(seq_len, seq_len, device=scores.device), diagonal=1
+    ) * -10000.0
+    scores = scores + causal_mask.unsqueeze(0).unsqueeze(0)
+
+    scores = scores + attention_mask
+
+    attn_probs = torch.softmax(scores, dim=-1)
+    attn_probs = self.dropout(attn_probs)
+
+    attn_value = torch.matmul(attn_probs, value)
+    attn_value = rearrange(attn_value, 'b h t d -> b t (h d)')
+    return attn_value
 
 
   def forward(self, hidden_states, attention_mask):
