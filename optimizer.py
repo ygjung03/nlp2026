@@ -77,9 +77,9 @@ class AdamW(Optimizer):
                     m_hat = m_hat / (1 - beta1 ** state['step'])
                     v_hat = v_hat / (1 - beta2 ** state['step'])
 
-                p.data = p.data - alpha * m_hat / (torch.sqrt(v_hat) + eps)
-
                 if weight_decay > 0.0:
                     p.data = p.data - alpha * weight_decay * p.data
+
+                p.data = p.data - alpha * m_hat / (torch.sqrt(v_hat) + eps)
 
         return loss
