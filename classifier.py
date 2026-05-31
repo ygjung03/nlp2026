@@ -56,8 +56,9 @@ class GPT2SentimentClassifier(torch.nn.Module):
     '''
     TODO: BERT 임베딩의 감정 분류를 위해 필요한 인스턴스 변수를 생성하시오.
     '''
-    ### 완성시켜야 할 빈 코드 블록
-    raise NotImplementedError
+    # 드롭아웃 층을 모델에 장착 후 감성분류 선형층 장착
+    self.dropout = torch.nn.Dropout(config.hidden_dropout_prob)
+    self.classifier = torch.nn.Linear(768, self.num_labels)
 
 
   def forward(self, input_ids, attention_mask):
@@ -68,8 +69,20 @@ class GPT2SentimentClassifier(torch.nn.Module):
         힌트: 현재 훈련 반복루프에서 손실 함수로 `F.cross_entropy`를 사용하고 있음을 고려하여
         적절한 반환값이 무엇인지 생각해보시오.
     '''
-    ### 완성시켜야 할 빈 코드 블록
-    raise NotImplementedError
+    # 1.  입력된 숫자 번호표와 마스크를 GPT 모델에 통과.
+    output = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
+    
+    # 2. 문장의 마지막 토큰 상태값을 가져옴.
+    last_token = output['last_token'] 
+    
+    # 3. 드롭아웃 적용
+    last_token = self.dropout(last_token)
+    
+    # 4. 긍정/부정 점수 계산.
+    logits = self.classifier(last_token)
+    
+    # 5. 결과 반환.
+    return logits
 
 
 class SentimentDataset(Dataset):
@@ -152,13 +165,13 @@ def load_data(filename, flag='train'):
   num_labels = {}
   data = []
   if flag == 'test':
-    with open(filename, 'r') as fp:
+    with open(filename, 'r', encoding='utf-8') as fp:
       for record in csv.DictReader(fp, delimiter='\t'):
         sent = record['sentence'].lower().strip()
         sent_id = record['id'].lower().strip()
         data.append((sent, sent_id))
   else:
-    with open(filename, 'r') as fp:
+    with open(filename, 'r', encoding='utf-8') as fp:
       for record in csv.DictReader(fp, delimiter='\t'):
         sent = record['sentence'].lower().strip()
         sent_id = record['id'].lower().strip()
@@ -310,7 +323,7 @@ def train(args):
 def test(args):
   with torch.no_grad():
     device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-    saved = torch.load(args.filepath)
+    saved = torch.load(args.filepath, weights_only=False)
     config = saved['model_config']
     model = GPT2SentimentClassifier(config)
     model.load_state_dict(saved['model'])
