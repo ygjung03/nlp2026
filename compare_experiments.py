@@ -36,7 +36,7 @@ def main():
   # 비교할 실험 이름들. sonnet_generation.py 실행 시 사용한 --exp_name과 일치해야 한다.
   exp_names = ['baseline', 'val_loss', 'ppl', 'ttr']
 
-  gold_path = 'data/TRUE_sonnets_held_out.txt'
+  gold_path = 'data/TRUE_sonnets_held_out_dev.txt'
 
   print(f"{'실험명':<12} | {'chrF':>8} | {'TTR':>8} | {'고유 단어 수':>10}")
   print('-' * 50)
