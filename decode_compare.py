@@ -43,14 +43,17 @@ def main():
   held_out = SonnetsDataset(args.held_out_path)
 
   # 비교할 디코딩 전략 (이름, temperature, top_p)
+
   configs = [
-      ('greedy',       0.1, 1.0),   # 거의 greedy: 가장 확률 높은 토큰 위주 선택
-      ('conservative', 0.7, 0.9),   # 보수적: 안정적이지만 다양성 낮음
-      ('baseline',     1.2, 0.9),   # 현재 기본값
-      ('creative',     1.5, 0.95),  # 창의적: 다양하지만 품질 불안정 가능
+      ('greedy',       0.1, 1.0,  0),
+      ('conservative', 0.7, 0.9,  0),
+      ('baseline',     1.2, 0.9,  0),
+      ('creative',     1.5, 0.95, 0),
+      ('top_k_50',     1.2, 1.0,  50),
+      ('top_k_10',     1.2, 1.0,  10),
   ]
 
-  for name, temp, top_p in configs:
+  for name, temp, top_p, top_k in configs:    
     print(f"\n{'='*50}")
     print(f"Generating with: {name} (temperature={temp}, top_p={top_p})")
     print(f"{'='*50}")
@@ -62,7 +65,7 @@ def main():
     for batch in held_out:
       sonnet_id = batch[0]
       encoding = model.tokenizer(batch[1], return_tensors='pt', padding=False, truncation=True).to(device)
-      output = model.generate(encoding['input_ids'], temperature=temp, top_p=top_p)[0][0]
+      output = model.generate(encoding['input_ids'], temperature=temp, top_p=top_p, top_k=top_k)[0][0]
       decoded = model.tokenizer.decode(output)
       sonnets.append((sonnet_id, decoded))
       print(f"{decoded}\n")

@@ -32,14 +32,14 @@ def calculate_diversity(text_list):
 
 
 def main():
-  exp_names = ['greedy', 'conservative', 'baseline', 'creative']
+  exp_names = ['greedy', 'conservative', 'baseline', 'creative', 'top_k_50', 'top_k_10']
   gold_path = 'data/TRUE_sonnets_held_out_dev.txt'
 
   print(f"{'전략명':<15} | {'temp':>5} | {'top_p':>5} | {'chrF':>8} | {'TTR':>8} | {'고유 단어 수':>10}")
   print('-' * 70)
 
-  temps = {'greedy': 0.1, 'conservative': 0.7, 'baseline': 1.2, 'creative': 1.5}
-  top_ps = {'greedy': 1.0, 'conservative': 0.9, 'baseline': 0.9, 'creative': 0.95}
+  temps = {'greedy': 0.1, 'conservative': 0.7, 'baseline': 1.2, 'creative': 1.5, 'top_k_50': 1.2, 'top_k_10': 1.2}
+  top_ps = {'greedy': 1.0, 'conservative': 0.9, 'baseline': 0.9, 'creative': 0.95, 'top_k_50': 1.0, 'top_k_10': 1.0}
 
   for name in exp_names:
     test_path = f'predictions/generated_sonnets_decode_{name}.txt'

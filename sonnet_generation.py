@@ -93,7 +93,7 @@ class SonnetGPT(nn.Module):
       return param.device
 
   @torch.no_grad()
-  def generate(self, encoding, temperature=0.7, top_p=0.9, max_length=128):
+  def generate(self, encoding, temperature=0.7, top_p=0.9, top_k=0, max_length=128):
     """
     top-p sampling 과 softmax temperature를 사용하여 새로운 소넷을 생성한다.
 
@@ -111,6 +111,13 @@ class SonnetGPT(nn.Module):
 
       # Convert logits to probabilities
       probs = torch.nn.functional.softmax(logits_last_token, dim=-1)
+
+      # Top-k filtering (top-p 이전에 적용하여, 상위 k개 토큰만 남긴다)
+      if top_k > 0:
+        k = min(top_k, probs.size(-1))
+        top_k_probs, top_k_indices = torch.topk(probs, k)
+        probs = torch.zeros_like(probs).scatter_(-1, top_k_indices, top_k_probs)
+        probs /= probs.sum(dim=-1, keepdim=True)
 
       # Top-p (nucleus) sampling
       sorted_probs, sorted_indices = torch.sort(probs, descending=True)
@@ -351,6 +358,8 @@ def get_args():
   parser.add_argument("--temperature", type=float, help="softmax temperature.", default=1.2)
   parser.add_argument("--top_p", type=float, help="Cumulative probability distribution for nucleus sampling.",
                       default=0.9)
+  parser.add_argument("--top_k", type=int, help="Top-k sampling parameter. 0이면 비활성화.", default=0)
+
 
   parser.add_argument("--batch_size", help='The training batch size.', type=int, default=8)
   parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
