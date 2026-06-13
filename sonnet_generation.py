@@ -61,6 +61,32 @@ def calculate_diversity(text_list):
   ttr = unique_types / total_tokens
   return ttr, unique_types
 
+class LoRALinear(nn.Module):
+  """LoRA(Low-Rank Adaptation) 래퍼. 원본 Linear 레이어를 감싸서
+  저랭크 행렬 A, B만 학습한다. [Hu et al., 2021]"""
+
+  def __init__(self, original_linear, rank=4, alpha=1.0):
+    super().__init__()
+    self.original = original_linear
+    self.rank = rank
+    self.alpha = alpha
+
+    in_features = original_linear.in_features
+    out_features = original_linear.out_features
+
+    # A는 작은 값으로 초기화, B는 0으로 초기화 → 학습 시작 시 LoRA 출력이 0
+    self.lora_A = nn.Parameter(torch.randn(in_features, rank) * 0.01)
+    self.lora_B = nn.Parameter(torch.zeros(rank, out_features))
+
+    # 원본 가중치는 동결
+    for param in self.original.parameters():
+      param.requires_grad = False
+
+  def forward(self, x):
+    original_output = self.original(x)
+    lora_output = (x @ self.lora_A @ self.lora_B) * (self.alpha / self.rank)
+    return original_output + lora_output
+
 
 class SonnetGPT(nn.Module):
   """Sonnet 생성을 위해 설계된 여러분의 GPT-2 모델."""
@@ -71,9 +97,17 @@ class SonnetGPT(nn.Module):
     self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
     self.tokenizer.pad_token = self.tokenizer.eos_token
 
-    # 기본적으로, 전체 모델을 fine-tuning한다. TODO: 이것은 좋은 생각이 아닌 것 같다.
-    for param in self.gpt.parameters():
-      param.requires_grad = True
+    # LoRA 사용 시: 원본 가중치를 동결하고 Q, V에 저랭크 어댑터만 학습 [Hu et al., 2021]
+    # Full fine-tuning 시: 모든 파라미터를 학습
+    if hasattr(args, 'use_lora') and args.use_lora:
+      for param in self.gpt.parameters():
+        param.requires_grad = False
+      for layer in self.gpt.gpt_layers:
+        layer.self_attention.query = LoRALinear(layer.self_attention.query, rank=args.lora_rank)
+        layer.self_attention.value = LoRALinear(layer.self_attention.value, rank=args.lora_rank)
+    else:
+      for param in self.gpt.parameters():
+        param.requires_grad = True
 
   def forward(self, input_ids, attention_mask):
     """
@@ -359,7 +393,10 @@ def get_args():
   parser.add_argument("--top_p", type=float, help="Cumulative probability distribution for nucleus sampling.",
                       default=0.9)
   parser.add_argument("--top_k", type=int, help="Top-k sampling parameter. 0이면 비활성화.", default=0)
-
+  
+  # LoRA 관련
+  parser.add_argument("--use_lora", action='store_true', help="LoRA 적용 여부.")
+  parser.add_argument("--lora_rank", type=int, default=4, help="LoRA의 rank (저랭크 차원).")
 
   parser.add_argument("--batch_size", help='The training batch size.', type=int, default=8)
   parser.add_argument("--lr", type=float, help="learning rate", default=1e-5)
