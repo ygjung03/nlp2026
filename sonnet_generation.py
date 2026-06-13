@@ -9,6 +9,8 @@ SonnetGPT 모델을 훈련하고, 필요한 제출용 파일을 작성한다.
 '''
 
 import argparse
+import math
+import os
 import random
 import torch
 
@@ -16,7 +18,7 @@ import numpy as np
 import torch.nn.functional as F
 
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 from transformers import GPT2Tokenizer
 from einops import rearrange
@@ -42,6 +44,24 @@ def seed_everything(seed=11711):
   torch.backends.cudnn.deterministic = True
 
 
+# --- 방법 3 (다양성 기반 조기 종료)를 위한 헬퍼 함수 ---
+def calculate_diversity(text_list):
+  """생성된 텍스트들의 어휘 다양성(Type-Token Ratio)을 계산한다."""
+  all_words = []
+  for text in text_list:
+    # 구두점 제거 및 소문자 변환 후 단어를 분리한다.
+    words = ''.join(c if c.isalnum() else ' ' for c in text).lower().split()
+    all_words.extend(words)
+
+  if not all_words:
+    return 0.0, 0
+
+  total_tokens = len(all_words)
+  unique_types = len(set(all_words))
+  ttr = unique_types / total_tokens
+  return ttr, unique_types
+
+
 class SonnetGPT(nn.Module):
   """Sonnet 생성을 위해 설계된 여러분의 GPT-2 모델."""
 
@@ -65,9 +85,8 @@ class SonnetGPT(nn.Module):
     hidden_states = gpt_output['last_hidden_state']        # [batch, seq_len, hidden_dim]
 
     # 2) hidden state -> vocab logits
-    logits = self.gpt.hidden_state_to_token(hidden_states) # [batch, seq_len, vocab_size]
+    logits = self.gpt.hidden_state_to_token(hidden_states)  # [batch, seq_len, vocab_size]
     return logits
-
 
   def get_device(self):
     for param in self.gpt.parameters():
@@ -84,7 +103,6 @@ class SonnetGPT(nn.Module):
     """
     token_ids = encoding.to(self.get_device())
     attention_mask = torch.ones(token_ids.shape, dtype=torch.int64).to(self.get_device())
-
 
     for _ in range(max_length):
       # logits을 구하기 위한 forward pass.
@@ -136,12 +154,24 @@ def save_model(model, optimizer, args, filepath):
 
 
 def train(args):
-  """Sonnet 데이터셋에서 소넷 생성을 위해 GPT-2 훈련.""" 
+  """Sonnet 데이터셋에서 소넷 생성을 위해 GPT-2 훈련."""
   device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-  # 데이터, 해당 데이터셋 및 데이터로드 생성하기.
+
+  # 데이터, 해당 데이터셋 및 데이터로더 생성하기.
   sonnet_dataset = SonnetsDataset(args.sonnet_path)
-  sonnet_dataloader = DataLoader(sonnet_dataset, shuffle=True, batch_size=args.batch_size,
-                                 collate_fn=sonnet_dataset.collate_fn)
+
+  # --- train/val split (방법 1: val_loss 기반 조기 종료에 사용) ---
+  # stopping_method가 val_loss가 아니어도 split 자체는 동일하게 적용해서
+  # 실험 간 학습 데이터 구성을 동일하게 맞춘다 (공정한 비교를 위해).
+  val_size = max(1, int(len(sonnet_dataset) * args.val_split))
+  train_size = len(sonnet_dataset) - val_size
+  generator = torch.Generator().manual_seed(args.seed)
+  train_subset, val_subset = random_split(sonnet_dataset, [train_size, val_size], generator=generator)
+
+  sonnet_dataloader = DataLoader(train_subset, shuffle=True, batch_size=args.batch_size,
+                                  collate_fn=sonnet_dataset.collate_fn)
+  val_dataloader = DataLoader(val_subset, shuffle=False, batch_size=args.batch_size,
+                               collate_fn=sonnet_dataset.collate_fn)
 
   # held-out 데이터셋 만들기: 처음 3 줄만 있다. 나머지를 채우는 것은 여러분 몫이다!
   held_out_sonnet_dataset = SonnetsDataset(args.held_out_sonnet_path)
@@ -152,6 +182,11 @@ def train(args):
 
   lr = args.lr
   optimizer = AdamW(model.parameters(), lr=lr)
+
+  # --- 조기 종료 관련 상태 변수 ---
+  best_val_loss = float('inf')
+  patience_counter = 0
+  best_ttr = 0.0
 
   for epoch in range(args.epochs):
     model.train()
@@ -177,22 +212,103 @@ def train(args):
       num_batches += 1
 
     train_loss = train_loss / num_batches
-    print(f"Epoch {epoch}: train loss :: {train_loss :.3f}.")
-    print('Generating several output sonnets...')
+
+    # --- Perplexity 계산 (방법 2에서 사용, 다른 실험에서도 참고용으로 출력) ---
+    try:
+      train_ppl = math.exp(train_loss)
+    except OverflowError:
+      train_ppl = float('inf')
+
+    print(f"Epoch {epoch}: train loss :: {train_loss :.3f}, train perplexity :: {train_ppl :.3f}.")
+
+    # --- Validation Loss 계산 (방법 1에서 사용, 다른 실험에서도 참고용으로 출력) ---
     model.eval()
+    val_loss = 0
+    num_val_batches = 0
+    with torch.no_grad():
+      for batch in val_dataloader:
+        b_ids, b_mask = batch['token_ids'].to(device), batch['attention_mask'].to(device)
+        logits = model(b_ids, b_mask)
+        logits = rearrange(logits[:, :-1].contiguous(), 'b t d -> (b t) d')
+        labels = b_ids[:, 1:].contiguous().flatten()
+        loss = F.cross_entropy(logits, labels, reduction='mean')
+        val_loss += loss.item()
+        num_val_batches += 1
+    val_loss = val_loss / num_val_batches
+    print(f"Epoch {epoch}: val loss :: {val_loss :.3f}.")
+
+    print('Generating several output sonnets...')
+    generated_texts_for_epoch = []
     for batch in held_out_sonnet_dataset:
       encoding = model.tokenizer(batch[1], return_tensors='pt', padding=True, truncation=True).to(device)
       output = model.generate(encoding['input_ids'], temperature=args.temperature, top_p=args.top_p)
+      generated_texts_for_epoch.append(output[1])
       print(f'{batch[1]}{output[1]}\n\n')
 
-    # TODO: 소넷의 작은 테이터셋에서 과적합을 방지하기 위한 종료 조건을 생각하시오.
+    # --- 어휘 다양성(TTR) 계산 (방법 3에서 사용, 다른 실험에서도 참고용으로 출력) ---
+    current_ttr, unique_words_count = calculate_diversity(generated_texts_for_epoch)
+    print(f"Epoch {epoch}: Vocabulary Diversity (TTR) :: {current_ttr:.2%} | Unique Words :: {unique_words_count}")
+
+    # 매 epoch 체크포인트는 항상 저장 (baseline 비교 및 디버깅용).
     save_model(model, optimizer, args, f'{epoch}_{args.filepath}')
+
+    # 최소 학습 epoch을 채우기 전에는 조기 종료를 판단하지 않는다.
+    if epoch + 1 < args.min_epochs:
+      continue
+
+    # --- 조기 종료 / best 체크포인트 선택 로직 ---
+    if args.stopping_method == 'val_loss':
+      # 방법 1: 검증 손실이 개선되면 best로 저장하고, patience 동안 개선이 없으면 종료.
+      if val_loss < best_val_loss:
+        best_val_loss = val_loss
+        patience_counter = 0
+        save_model(model, optimizer, args, f'best_{args.filepath}')
+      else:
+        patience_counter += 1
+        print(f"EarlyStopping counter: {patience_counter} out of {args.patience}")
+        if patience_counter >= args.patience:
+          print(f"Early stopping triggered at epoch {epoch}. Training stopped.")
+          break
+
+    elif args.stopping_method == 'perplexity':
+      # 방법 2: train perplexity가 목표치 이하로 떨어지면 그 시점 모델을 best로 저장하고 종료.
+      if train_ppl <= args.target_perplexity:
+        print(f"Target perplexity ({args.target_perplexity}) reached! "
+              f"Stopping early to prevent over-memorization.")
+        save_model(model, optimizer, args, f'best_{args.filepath}')
+        break
+
+    elif args.stopping_method == 'diversity':
+      # 방법 3: TTR이 개선되면 best로 저장. TTR이 임계값 아래로 떨어지면 모드 붕괴로 보고 종료.
+      if current_ttr > best_ttr:
+        best_ttr = current_ttr
+        save_model(model, optimizer, args, f'best_{args.filepath}')
+
+      if current_ttr < args.min_ttr:
+        print(f"WARNING: Model is suffering from Mode Collapse. "
+              f"Diversity dropped below {args.min_ttr:.2%}")
+        print(f"Early stopping triggered at epoch {epoch}.")
+        break
+
+    # args.stopping_method == 'none' (baseline)인 경우 추가 동작 없이 다음 epoch으로.
+
+  return epoch  # 실제로 학습이 끝난 마지막 epoch 번호를 반환 (체크포인트 로딩에 사용).
 
 
 @torch.no_grad()
-def generate_submission_sonnets(args):
+def generate_submission_sonnets(args, last_epoch):
   device = torch.device('cuda') if args.use_gpu else torch.device('cpu')
-  saved = torch.load(f'{args.epochs-1}_{args.filepath}', weights_only=False)
+
+  # 모든 실험에서 동일한 규칙으로 체크포인트를 선택한다:
+  # best_{filepath}가 있으면 best를, 없으면 학습이 끝난 마지막 epoch의 체크포인트를 사용한다.
+  best_path = f'best_{args.filepath}'
+  if os.path.exists(best_path):
+    print(f"Loading the best checkpoint from {best_path}...")
+    saved = torch.load(best_path, weights_only=False)
+  else:
+    last_path = f'{last_epoch}_{args.filepath}'
+    print(f"No best checkpoint found. Loading the last-epoch checkpoint from {last_path}...")
+    saved = torch.load(last_path, weights_only=False)
 
   model = SonnetGPT(saved['args'])
   model.load_state_dict(saved['model'])
@@ -241,6 +357,30 @@ def get_args():
   parser.add_argument("--model_size", type=str, help="The model size as specified on hugging face.",
                       choices=['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'], default='gpt2')
 
+  # --- 실험 비교를 위한 인자들 ---
+  parser.add_argument("--exp_name", type=str, default="baseline",
+                      help="실험 이름. 결과/체크포인트 파일명을 구분하는 데 사용된다.")
+  parser.add_argument("--stopping_method", type=str,
+                      choices=["none", "val_loss", "perplexity", "diversity"],
+                      default="none",
+                      help="조기 종료 방법: none(=baseline), val_loss, perplexity, diversity 중 선택.")
+  parser.add_argument("--val_split", type=float, default=0.1,
+                      help="train set 중 validation으로 떼어낼 비율.")
+  parser.add_argument("--min_epochs", type=int, default=3,
+                      help="조기 종료를 판단하기 시작하기 전 최소 학습 epoch 수.")
+
+  # 방법 1: validation loss 기반
+  parser.add_argument("--patience", type=int, default=2,
+                      help="val_loss 방식에서 개선이 없을 때 몇 epoch까지 기다릴지.")
+
+  # 방법 2: perplexity threshold 기반
+  parser.add_argument("--target_perplexity", type=float, default=5.0,
+                      help="perplexity 방식에서 학습을 멈출 목표 perplexity.")
+
+  # 방법 3: 생성 다양성(TTR) 기반
+  parser.add_argument("--min_ttr", type=float, default=0.4,
+                      help="diversity 방식에서 mode collapse로 판단할 TTR 임계값.")
+
   args = parser.parse_args()
   return args
 
@@ -266,7 +406,10 @@ def add_arguments(args):
 
 if __name__ == "__main__":
   args = get_args()
-  args.filepath = f'{args.epochs}-{args.lr}-sonnet.pt'  # 경로명 저장.
+  # 실험 이름을 체크포인트/결과 파일명에 포함시켜 실험별로 구분되게 한다.
+  args.filepath = f'{args.exp_name}_{args.epochs}-{args.lr}-sonnet.pt'
+  args.sonnet_out = f'predictions/generated_sonnets_{args.exp_name}.txt'
+
   seed_everything(args.seed)  # 재현성을 위한 random seed 고정.
-  train(args)
-  generate_submission_sonnets(args)
+  last_epoch = train(args)
+  generate_submission_sonnets(args, last_epoch)
