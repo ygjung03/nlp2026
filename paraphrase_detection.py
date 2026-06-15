@@ -51,7 +51,11 @@ class ParaphraseGPT(nn.Module):
   def __init__(self, args):
     super().__init__()
     self.gpt = GPT2Model.from_pretrained(model=args.model_size, d=args.d, l=args.l, num_heads=args.num_heads)
-    self.paraphrase_detection_head = nn.Linear(args.d, 2)  # Paraphrase detection 의 출력은 두 가지: 1 (yes) or 0 (no).
+
+    # Cloze-style 태스크: 별도의 분류 헤드(nn.Linear(d, 2)) 대신 GPT-2의 LM 헤드
+    # (입력 임베딩과 weight tying된 hidden_state_to_token)를 사용해 전체 vocab에 대한
+    # logits를 생성한다. 이렇게 해야 datasets.py의 라벨 인코딩(yes/no -> 토큰 ID
+    # 8505/3919)과 evaluation.py의 argmax 평가 방식이 서로 일관된다.
 
     # 기본적으로, 전체 모델을 finetuning 한다.
     for param in self.gpt.parameters():
@@ -59,18 +63,29 @@ class ParaphraseGPT(nn.Module):
 
   def forward(self, input_ids, attention_mask):
     """
-    TODO: paraphrase_detection_head Linear layer를 사용하여 토큰의 레이블을 예측하시오.
+    paraphrase 여부를 cloze-style로 예측한다.
 
     입력은 다음과 같은 구조를 갖는다:
 
       'Is "{s1}" a paraphrase of "{s2}"? Answer "yes" or "no": '
 
-    따라서, 문장의 끝에서 다음 토큰에 대한 예측을 해야 할 것이다. 
-    훈련이 잘 되었다면, 패러프레이즈인 경우에는 토큰 "yes"(BPE index 8505)가, 
+    따라서, 문장의 끝에서 다음 토큰에 대한 예측을 해야 할 것이다.
+    훈련이 잘 되었다면, 패러프레이즈인 경우에는 토큰 "yes"(BPE index 8505)가,
     패러프레이즈가 아닌 경우에는 토큰 "no" (BPE index 3919)가 될 것이다.
+
+    반환값은 마지막(non-padding) 토큰에 대한 전체 vocab logits이며 크기는
+    [batch_size, vocab_size]이다. datasets.py가 라벨을 토큰 ID(8505/3919)로
+    인코딩하므로 train()의 F.cross_entropy(logits, labels)와 evaluation.py의
+    np.argmax(logits, axis=1) 모두 이 출력과 일관되게 동작한다.
     """
-    ### 완성시켜야 할 빈 코드 블록
-    raise NotImplementedError
+    # GPT-2를 통과시켜 마지막 non-padding 토큰의 hidden state를 얻는다.
+    gpt_output = self.gpt(input_ids=input_ids, attention_mask=attention_mask)
+    last_token_hidden_state = gpt_output['last_token']  # [batch_size, hidden_size]
+
+    # weight tying된 LM 헤드로 전체 vocab에 대한 logits를 생성한다.
+    logits = self.gpt.hidden_state_to_token(last_token_hidden_state)  # [batch_size, vocab_size]
+
+    return logits
 
 
 
