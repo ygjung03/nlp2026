@@ -4,7 +4,7 @@
 사전 조건:
   - sonnet_generation.py를 exp_name별로 실행해서
     predictions/generated_sonnets_{exp_name}.txt 파일들이 이미 생성되어 있어야 한다.
-  - data/TRUE_sonnets_held_out.txt (정답 14줄 전체)가 존재해야 한다.
+  - data/TRUE_sonnets_held_out_dev.txt (정답 14줄 전체)가 존재해야 한다.
 
 실행:
   python compare_experiments.py

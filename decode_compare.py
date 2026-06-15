@@ -24,7 +24,7 @@ def main():
   parser = argparse.ArgumentParser()
   parser.add_argument("--checkpoint", type=str, default="9_baseline_10-1e-05-sonnet.pt",
                       help="사용할 체크포인트 파일 경로.")
-  parser.add_argument("--held_out_path", type=str, default="data/sonnets_held_out.txt")
+  parser.add_argument("--held_out_path", type=str, default="data/sonnets_held_out_dev.txt")
   parser.add_argument("--use_gpu", action='store_true')
   parser.add_argument("--seed", type=int, default=11711)
   args = parser.parse_args()
